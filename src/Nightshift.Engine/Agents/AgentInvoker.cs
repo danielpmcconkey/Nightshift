@@ -140,6 +140,11 @@ public class AgentInvoker
     {
         var modelId = ResolveModel("opus");
         var blueprint = _promptBuilder.LoadBlueprint(blueprintBasePath, "foreman-jurisdiction");
+        var addendum = _promptBuilder.LoadAddendum(project.RepoPath, project.AddendaSubpath, "foreman-jurisdiction");
+
+        var systemPrompt = addendum is not null
+            ? $"{blueprint}\n\n---\n\n# Project Addendum\n\n{addendum}"
+            : blueprint;
 
         var prompt = await _promptBuilder.BuildForemanPrompt(
             card, project, failedStep, agentResponse, conditionalCounts, basePath, ct);
@@ -163,7 +168,7 @@ public class AgentInvoker
                 .WithArguments(args =>
                 {
                     args.Add("-p");
-                    args.Add("--append-system-prompt").Add(blueprint);
+                    args.Add("--append-system-prompt").Add(systemPrompt);
                     args.Add("--output-format").Add("json");
                     args.Add("--model").Add(modelId);
                     args.Add("--dangerously-skip-permissions");
