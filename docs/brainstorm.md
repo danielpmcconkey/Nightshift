@@ -1,346 +1,196 @@
 # Nightshift — Brainstorm
 
-## What Is This
+**Date:** 2026-04-06
+**Status:** Ready for planning
+**Source:** Dan's vision doc (`docs/dans_idea.md`) + collaborative Q&A
 
-An autonomous software development engine. Nightshift pulls tickets off a
-centralized kanban board, dispatches them through an SDLC pipeline of AI
-agents, and delivers merged PRs. When it hits a decision it can't make, it
-stops, logs a blocker, and moves on to the next card. Dan resolves blockers
-in the morning over a conversation with BD.
+## What We're Building
+
+An autonomous software development engine. Nightshift pulls cards off a
+Postgres kanban board, dispatches them through an SDLC pipeline of AI agents
+(Claude CLI subprocesses), and delivers merged PRs. When it can't make a
+decision, it blocks the card and moves on. Dan resolves blockers in the
+morning over a conversation with BD.
 
 Nightshift is not a copilot. It's a build crew that works the night shift.
 
-## Origin Story
+## Why This Approach
 
-### The LeoBloom Pipeline (Proven Pattern)
+Three proven systems converge:
 
-Over the course of building LeoBloom (F#/.NET personal accounting system),
-we developed and battle-tested an agent pipeline:
+- **OGRE** — a 28-node Python state machine that reverse-engineers ETL jobs
+  via AI agents. Proved that a dumb orchestrator + smart agents + fresh
+  contexts is the right architecture. Task queue, retry logic, transition
+  tables, two-artifact-stream pattern, per-node model selection — all
+  battle-tested.
 
-```
-PO -> Planner -> Gherkin Writer -> Builder -> QE -> Reviewer -> Governor -> PO Signoff -> RTE
-```
+- **LeoBloom pipeline** — a manual SDLC agent pipeline (PO -> Planner ->
+  Gherkin Writer -> Builder -> QE -> Reviewer -> Governor -> RTE) that
+  shipped 6 projects in 2 days. The pipeline is mechanical. BD's
+  orchestration is mechanical. The judgment calls are rare and well-defined.
+  This is ripe for automation.
 
-Each agent is a Claude subagent with:
-- A **generic role blueprint** (the subagent_type — "builder", "qe", etc.)
-- An optional **per-repo addendum** (DSWF files — domain knowledge, test
-  conventions, file paths, project-specific rules)
-- A **fresh context** every invocation (no state carried between agents)
+- **The insight** — BD is already just following a workflow.md file and
+  spawning agents in order. Replace BD's orchestration with a deterministic
+  engine, keep the agents exactly as they are.
 
-BD (the basement dweller Claude instance) orchestrates the pipeline manually
-today — spawning agents, reading workflow.md, passing artifacts between
-steps. The pipeline is mechanical. BD's orchestration is mechanical. The
-judgment calls are rare and well-defined.
+## Key Decisions
 
-This works. We shipped 6 projects through it in 2 days. The bottleneck is
-BD's context window and Dan's availability to greenlight the next project.
+### Architecture
 
-### OGRE (Proven Engine)
+| Decision | Choice | Rationale |
+|----------|--------|-----------|
+| Language | C# / .NET 10 | Dan's preference. Strong typing. Console app. |
+| Database | Postgres (new `nightshift` database) | Own DB at `172.18.0.1:5432`. Own role — not the shared `claude` user. |
+| Agent runtime | Claude CLI (`claude -p`) | Proven in OGRE. Fresh contexts. Structured JSON. Per-step model selection. |
+| UI | None | BD is the UI. Direct SQL for admin. |
+| Hosting | Docker container | Same sandbox where BD lives. |
+| Secrets | Environment variables | Connection string, API keys, etc. Standard Docker pattern. |
+| Logging | Serilog (or similar .NET logging framework) | Structured logging to console + file. |
 
-The EtlReverseEngineering project ("Ogre") built a 28-node state machine
-engine in Python that reverse-engineers legacy ETL jobs using AI agents.
+### Engine Design
 
-Key lessons from OGRE:
-- **The orchestrator must be dumb.** POC5 used an LLM orchestrator that
-  suffered from context rot — it fabricated results as conversations grew.
-  The fix: deterministic state machine. All intelligence in the agents.
-- **Agents get fresh contexts.** Each node invokes Claude CLI as a
-  subprocess. No conversation history. Blueprint + prompt + structured
-  JSON response.
-- **Postgres task queue with `SELECT ... FOR UPDATE SKIP LOCKED`.** Thread-safe
-  work claiming. Concurrent workers. One active task per job.
-- **Two-artifact-stream pattern.** Process files (inter-agent JSON) vs
-  deliverable artifacts. Process files are ephemeral; artifacts persist.
-- **Review loops.** CONDITIONAL outcome → response node → re-review. Bounded
-  by max-conditional count to prevent infinite loops.
-- **Per-node model selection.** Opus for spec/review/judgment. Sonnet for
-  build/test. Haiku for mechanical execution.
+| Decision | Choice | Rationale |
+|----------|--------|-----------|
+| Concurrency | Single-threaded | One card at a time. Add concurrency later when proven. |
+| Lifecycle | Batch (CLI) | Manually kicked off. Runs until queue is drained or all cards blocked. |
+| Clutch | DB-based stop flag | Single-row config table. Clutch disengaged = finish current card and stop. Same pattern as OGRE. |
+| State machine | Deterministic transition table | Engine follows the table. No LLM in the engine. All intelligence in agents. |
 
-### The Kanban Board (Existing Asset)
+### Workflow & Pipeline
 
-Dan has an existing C# Blazor kanban board (Jira clone) built against SQL
-Server. The UI is expendable but the data model and board mechanics might
-have salvageable bones.
+| Decision | Choice | Rationale |
+|----------|--------|-----------|
+| Default workflow | BDD pipeline (includes Gherkin Writer) | Forces BDD adoption across all projects. Non-BDD repos define custom workflows. |
+| Workflow storage | DB tables | No code deploy to change a workflow. Insert rows. |
+| Workflow override | Per-project, full replacement | No inheritance/merge. Use default or define your own. |
+| Workflow changes | Offline only | No runtime workflow modification. Engine must be stopped. |
 
-## Architecture
+### Agents & Blueprints
 
-### Component Overview
+| Decision | Choice | Rationale |
+|----------|--------|-----------|
+| Blueprint storage | Nightshift repo (`blueprints/`) | Copied from `/workspace/ai-dev-playbook/Tooling/DansAgents/`. Versioned with engine. |
+| Per-repo addenda | Target repo (e.g., `DSWF/qe.md`) | Owned by the repo, not Nightshift. Injected alongside standard blueprint. |
+| Foreman | Built into engine plumbing | Full invocation on JUDGMENT_NEEDED. Jurisdiction doc loading. Resolve/escalate branching. Blueprint written by Dan separately. |
+| Foreman on CONDITIONAL/FAIL | Always invoked | Foreman sees every rejection/failure. Decides retry vs escalate. Engine enforces hard cap of 3 loops regardless of Foreman's opinion. |
+| Agent blueprints | Out of scope for this build | Already exist at ai-dev-playbook. Copied in, not authored. |
 
-```
-+------------------+     +-------------------+     +------------------+
-|   Kanban Board   |     |  Workflow Engine   |     |  Agent Runtime   |
-|   (Postgres)     |<--->|  (C# Console App) |---->|  (Claude CLI)    |
-|                  |     |                   |     |                  |
-|  - Cards         |     |  - State machine  |     |  - Fresh context |
-|  - Projects      |     |  - Task claiming  |     |  - Blueprint +   |
-|  - Blockers      |     |  - Transitions    |     |    addenda       |
-|  - Workflow defs |     |  - Foreman calls  |     |  - JSON response |
-+------------------+     +-------------------+     +------------------+
-```
+### Git & PRs
 
-### The Board (Postgres)
+| Decision | Choice | Rationale |
+|----------|--------|-----------|
+| Branch creation | RTE agent (start of pipeline) | RTE bookends: creates branch at start, merges PR at end. Engine stays git-ignorant. |
+| Git auth | Inherited from container | Same setup as LeoBloom. `GIT_SSH_COMMAND` + gh PAT from existing config. |
 
-No UI. Straight Postgres. Interaction is via:
-- BD in Claude Code conversations ("good morning, whatcha got")
-- The workflow engine (claiming cards, updating state, logging blockers)
-- Direct SQL for admin/debugging
+### Kanban Board
 
-Each development repo gets a **project identifier** in the board. This tells
-the engine what repo a card belongs to, where to find the code, and whether
-the project has workflow or blueprint overrides.
+| Decision | Choice | Rationale |
+|----------|--------|-----------|
+| Old Kanban board | Build from scratch | Old schema is SQL Server, trivially simple (4 tables), no workflow concepts. Not worth porting. |
+| Card intake | BD inserts via SQL | Morning conversation is the intake mechanism. |
+| Card priority | 5 levels, FIFO within each | Engine always grabs highest-priority oldest card first. |
+| Card completion | Status = COMPLETE, stays forever | Cards are historical records. Never deleted. |
+| Project registration | Explicit repo_path on project record | No magic path derivation. Set it when you register a project. |
 
-A card carries:
-- Title and description (the backlog item / user story)
-- Project identifier (which repo)
-- Current SDLC state (which workflow step it's on)
-- Status (queued, in-progress, blocked, complete, failed)
-- Blocker log (if blocked, why, and what context the foreman captured)
-- Run history (which agents ran, what they returned, timestamps)
+### Artifacts
 
-### The Engine (C# Console App)
+| Decision | Choice | Rationale |
+|----------|--------|-----------|
+| Process artifacts | Filesystem, gitignored | `artifacts/{card_id}/` in Nightshift repo. Inter-agent comms, plans, reviewer findings. Inspectable, not version-controlled. |
+| Gherkin specs | Target repo | Specs are real deliverables, not process files. Live in the target project's repo. Part of the BDD push. |
+| Code | Target repo branch | Builder writes code in the feature branch. RTE merges it. |
 
-A deterministic processing loop. No LLM in the engine itself.
+### Observability
 
-```
-loop:
-  1. Poll board for unblocked cards in "queued" or "in-progress" status
-  2. Claim the next card (thread-safe via DB locking)
-  3. Look up the card's current SDLC state
-  4. Load the workflow definition for this card's project
-     (project-specific override, or default workflow)
-  5. Find the workflow step for the current state
-  6. Invoke the agent:
-     - Load the step's blueprint
-     - Load per-repo addenda if they exist
-     - Invoke Claude CLI with blueprint + prompt + context from prior steps
-     - Parse the structured JSON response
-  7. Read the agent's outcome
-  8. If outcome is in the step's normal transition map:
-     -> Update card state, save artifacts, enqueue next step
-  9. If outcome is JUDGMENT_NEEDED:
-     -> Invoke the Foreman agent with context + jurisdiction rules
-     -> If Foreman resolves it: apply the Foreman's decision, continue
-     -> If Foreman escalates: log blocker on card, mark card blocked,
-        move on to next card
-  10. If outcome is FAIL:
-     -> Retry logic (bounded, per OGRE pattern)
-     -> After max retries: log blocker, mark card blocked
-```
+| Decision | Choice | Rationale |
+|----------|--------|-----------|
+| Run history | DB table (`run_history`) | Row per agent invocation: card_id, step, outcome, timestamps, notes. |
+| Run history cleanup | Auto-delete 30 days after card completion | Table will get big. Prune based on card completion date + 30 days. |
+| Engine logging | Serilog or similar | Structured file + console logging. Stack traces, engine state, operational telemetry. |
 
-The engine doesn't make architectural decisions. It follows the transition
-table.
-
-### Workflow Definitions (DB-Driven)
-
-A workflow is a list of steps stored in the database. Each step has:
-
-| Field | Description |
-|-------|-------------|
-| Step name | Unique identifier within the workflow (e.g., "builder") |
-| Sequence | Ordering (for display/reasoning, not execution — transitions govern flow) |
-| Blueprint name | Which .md blueprint to load |
-| Model tier | opus, sonnet, or haiku |
-| Allowed outcomes | List of valid return values from the agent |
-| Transition map | outcome -> next step name (or COMPLETE, or BLOCKED) |
-
-The **default workflow** is the proven LeoBloom pipeline:
+## Default Workflow (BDD Pipeline)
 
 ```
-po_kickoff -> planner -> gherkin_writer -> builder -> qe -> reviewer ->
-governor -> po_signoff -> rte
+rte_setup -> po_kickoff -> planner -> gherkin_writer -> builder -> qe ->
+reviewer -> governor -> po_signoff -> rte_merge
 ```
 
-With transitions like:
-- `builder.SUCCESS -> qe`
-- `reviewer.APPROVED -> governor`
-- `reviewer.CONDITIONAL -> builder_response`
-- `builder_response.SUCCESS -> reviewer`
-- `reviewer.FAIL -> builder` (full rebuild)
+Transitions:
+- `*.SUCCESS -> next step`
+- `*.CONDITIONAL -> foreman` (Foreman decides: retry or escalate)
+- `*.FAIL -> foreman` (Foreman decides: rebuild or escalate)
+- `foreman.RETRY -> builder_response -> reviewer` (bounded by 3-loop cap)
+- `foreman.ESCALATE -> BLOCKED`
 - `*.JUDGMENT_NEEDED -> foreman`
+- Engine hard cap: 3 review loops per card, then BLOCKED regardless of Foreman
 
-A project can **override the entire workflow** by defining its own steps.
-Or it can use the default. No inheritance/merge — either you use the
-standard workflow or you define your own. Keeps it simple.
+## Components
 
-Workflow changes only happen while the engine is off. No runtime workflow
-modification.
+### 1. Database Schema (Postgres)
 
-### Agent Invocation
+**Tables:**
+- `project` — id, name, repo_path, workflow_id (nullable FK, null = use default), addenda_subpath (default `DSWF`, convention: `{repo_path}/{addenda_subpath}/{blueprint_name}.md`)
+- `workflow` — id, name, is_default
+- `workflow_step` — id, workflow_id, step_name, sequence, blueprint_name, model_tier, allowed_outcomes[], transition_map (jsonb)
+- `card` — id, project_id, title, description, priority (1-5), status (queued/in_progress/blocked/complete/failed), current_step, created_at, updated_at, completed_at
+- `blocker` — id, card_id, step_name, agent_response (text), foreman_assessment (text), context (text), created_at, resolved_at, resolution (text)
+- `run_history` — id, card_id, step_name, model, started_at, completed_at, outcome, notes
+- `engine_config` — single-row: clutch_engaged (bool)
 
-Same pattern as OGRE. Each agent is a fresh Claude CLI subprocess:
+### 2. Engine (C# Console App)
 
+```
+outer loop:
+  1. Check clutch — if disengaged, exit gracefully
+  2. Poll for next card (highest priority, oldest, unblocked, queued/in_progress)
+  3. If no card found, exit (queue drained)
+  4. Claim the card (status -> in_progress)
+  5. Load workflow for card's project (project override or default)
+
+  inner loop (step-by-step through the pipeline):
+    6. Find current step in workflow
+    7. Load blueprint (standard + per-repo addendum if exists)
+    8. Invoke Claude CLI subprocess with blueprint + prompt + prior artifacts
+    9. Parse JSON response, extract outcome
+    10. Log to run_history
+    11. If outcome in normal transition map -> advance card to next step, continue inner loop
+    12. If CONDITIONAL or FAIL -> invoke Foreman
+        - Foreman says retry + under 3-loop cap -> route to builder_response, continue inner loop
+        - Foreman escalates or at 3-loop cap -> create blocker, mark card blocked, break to outer loop
+    13. If JUDGMENT_NEEDED -> invoke Foreman (same resolve/escalate logic)
+    14. If final step completes -> mark card COMPLETE, break to outer loop
+```
+
+### 3. Agent Runtime
+
+Each agent is a fresh Claude CLI subprocess:
 ```bash
 claude -p \
   --append-system-prompt <blueprint_text> \
   --output-format json \
-  --model <step's model tier> \
+  --model <model_tier> \
   --dangerously-skip-permissions \
   --no-session-persistence \
   <prompt>
 ```
 
-The prompt includes:
-- The card's title and description
-- Artifacts from prior steps (plans, specs, code references, test results)
-- The per-repo addendum for this role (if it exists)
-- Instructions to return structured JSON with an `outcome` field
+Agents return JSON with an `outcome` field. Everything else is saved as artifacts.
 
-Agents return JSON. The engine parses the outcome and follows the
-transition map. Everything else in the response is saved as artifacts.
+### 4. Morning Conversation
 
-### Blueprint System
+Not automated. Dan opens Claude Code, says "good morning, what's blocked?"
+BD reads the blocker table, walks through each with full context, Dan makes
+calls, BD updates the board, Nightshift picks them up on the next run.
 
-Two layers, same as LeoBloom's DSWF pattern:
+## Prior Art Reference
 
-1. **Standard blueprints** — ship with Nightshift. One per SDLC role.
-   These are the generic agent instructions (what a Builder does, what a
-   QE does, what a Reviewer checks for). Live in the Nightshift repo.
-
-2. **Per-repo addenda** — live in the target repo (e.g., `DSWF/qe.md` in
-   LeoBloom). Injected into the agent's context alongside the standard
-   blueprint. This is where repo-specific conventions live (test patterns,
-   file paths, domain knowledge, year reservation tables, GAAP rules,
-   whatever).
-
-A repo doesn't need addenda. The standard blueprints work alone. Addenda
-just make the agents smarter about that specific codebase.
-
-### The Foreman
-
-New role. Not in the current pipeline. This is the agent that replaces
-BD as orchestrator for judgment calls.
-
-**When invoked:** Any agent can return `JUDGMENT_NEEDED` as an outcome,
-along with a structured description of what decision is needed and what
-options it sees.
-
-**What the Foreman does:**
-1. Reads the judgment request
-2. Reads a **jurisdiction document** that defines what calls it can make
-   autonomously (e.g., "informational reviewer findings can be dismissed,"
-   "test failures require a rebuild," "scope changes require human input")
-3. If the decision is within jurisdiction: makes the call, returns a
-   resolution that the engine applies
-4. If the decision exceeds jurisdiction: returns ESCALATE with context
-   for Dan
-
-**What the Foreman does NOT do:**
-- Write code
-- Modify artifacts
-- Override agent outputs
-- Make scope decisions
-- Approve anything that affects production data
-
-The Foreman is a traffic cop, not an architect. Its jurisdiction is
-deliberately narrow. The default answer is "escalate."
-
-### The Blocker Protocol
-
-When a card gets blocked (Foreman escalation, max retries exhausted,
-unrecoverable agent failure):
-
-1. Card status set to BLOCKED
-2. Card's SDLC state preserved (so it can resume from where it stopped)
-3. Blocker record created with:
-   - What step was running
-   - What the agent returned
-   - What the Foreman's assessment was (if applicable)
-   - Full context needed for Dan to make a decision
-4. Engine moves on to the next unblocked card
-
-### The Morning Conversation
-
-Not a CLI tool. Not a dashboard. A conversation.
-
-Dan opens Claude Code and says "good morning, what's blocked?" BD reads
-the blocker table, walks through each blocked card with full context, and
-Dan makes the calls. BD updates the board, unblocks the cards, and
-Nightshift picks them up on the next run.
-
-This is the human-in-the-loop. It's deliberate, it's bounded, and it
-happens on Dan's schedule.
-
-## Technology Decisions
-
-| Decision | Choice | Rationale |
-|----------|--------|-----------|
-| Language | C# | Dan's preference. Strong typing. Good for the state machine + DB layer. |
-| Database | Postgres | Already running in the Docker environment. OGRE and LeoBloom both use it. |
-| Agent runtime | Claude CLI (`claude -p`) | Proven in OGRE. Fresh contexts. Structured JSON. Model selection per node. |
-| UI | None | BD is the UI. Direct SQL for admin. |
-| Hosting | Docker container | Same sandbox environment where BD lives. |
-| Workflow storage | DB tables | No code deploy to change a workflow. Insert rows. |
-| Blueprint storage | Markdown files in repo | Version controlled. Same pattern as OGRE. |
-| Per-repo addenda | Markdown files in target repo | Owned by the repo, not by Nightshift. |
-
-## What We Can Salvage
-
-### From OGRE
-- Task queue pattern (Postgres, `SELECT ... FOR UPDATE SKIP LOCKED`)
-- Agent invocation pattern (Claude CLI subprocess, structured JSON)
-- Retry/bounded-loop logic
-- Two-artifact-stream pattern (process files vs deliverables)
-- Per-node model mapping
-- The core insight: dumb orchestrator, smart agents, fresh contexts
-
-### From the Kanban Board
-- TBD — need to evaluate the data model and board mechanics. The C#/Blazor
-  code is old and Dan says "much of it sucks." The schema might have good
-  bones for card lifecycle management. Worth a look before building from
-  scratch.
-
-### From LeoBloom's Pipeline
-- The SDLC workflow definition (which roles, what order, what artifacts)
-- The DSWF addenda pattern
-- The agent spawning protocol (subagent_type + prompt template)
-- Battle-tested blueprints for every pipeline role
-- The insight that the pipeline is mechanical — BD's orchestration today
-  is already just following workflow.md
+| Source | What to reuse |
+|--------|--------------|
+| OGRE (`/workspace/EtlReverseEngineering`) | Transition table pattern, SELECT FOR UPDATE SKIP LOCKED, agent subprocess invocation, retry/escalation logic, clutch mechanism, two-artifact-stream |
+| LeoBloom (`/workspace/LeoBloom`) | SDLC pipeline sequence, DSWF addenda pattern, role definitions, artifact flow conventions |
+| Agent blueprints (`/workspace/ai-dev-playbook/Tooling/DansAgents/`) | ba.md, builder.md, gherkin-writer.md, governor.md, planner.md, po.md, qe.md, reviewer.md, rte.md — copy into Nightshift repo |
 
 ## Open Questions
 
-1. **Concurrency model.** OGRE runs N concurrent workers across jobs.
-   Nightshift could do the same (multiple cards in flight). But do we want
-   that from day one, or start single-threaded and add concurrency later?
-
-2. **Artifact storage.** OGRE uses the filesystem (jobs/{job_id}/). Nightshift
-   could do the same, or store artifacts in Postgres (bytea/text columns),
-   or use the target repo's own file system (branches). The target repo's
-   branch is probably the right answer — the Builder is already writing code
-   there.
-
-3. **How does the engine interact with git?** The RTE agent today creates
-   branches, commits, pushes, creates PRs, merges. Does the engine set up
-   the branch before dispatching to the first agent? Or does the PO/Planner
-   agent do it?
-
-4. **Kanban board salvage assessment.** Haven't looked at the schema yet.
-   Might be worth 30 minutes to evaluate before deciding build-from-scratch
-   vs adapt.
-
-5. **Where do standard blueprints come from?** We have battle-tested prompts
-   embedded in BD's agent spawning calls today. Those need to be extracted
-   into standalone blueprint .md files that work without BD's orchestration
-   context.
-
-6. **Testing strategy.** OGRE has a `--stubs` flag for testing the engine
-   without invoking real agents. Nightshift needs the same. What does the
-   test harness look like?
-
-7. **Engine lifecycle.** Is this a long-running daemon, or a "run once and
-   process everything" batch job? OGRE is batch (runs until timeout or all
-   jobs complete). Nightshift could be either.
-
-8. **Multiple repos sharing a Postgres instance.** LeoBloom already uses
-   `172.18.0.1:5432`. Nightshift's board tables would live in the same
-   Postgres instance, different schema. Need to confirm there's no
-   collision.
-
-## What This Is NOT
-
-- **Not a CI/CD system.** It doesn't deploy. It develops.
-- **Not a copilot.** It doesn't pair with a human. It works alone.
-- **Not an AI wrapper.** The engine has zero LLM in it. It's a state
-  machine that happens to invoke LLM agents.
-- **Not opinionated about the SDLC.** The default workflow is our proven
-  pipeline, but a repo can define whatever workflow it wants.
+None. All resolved during brainstorm.
