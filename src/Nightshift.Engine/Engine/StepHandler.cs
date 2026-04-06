@@ -47,7 +47,7 @@ public class StepHandler
 
     /// <summary>
     /// Process a claimed task. Returns true if the engine should continue polling,
-    /// false if the clutch was disengaged during processing.
+    /// false if the engine was disabled during processing.
     /// </summary>
     public async Task<bool> ProcessTask(TaskQueueItem task, NpgsqlConnection conn,
         NpgsqlTransaction claimTx, string blueprintBasePath, string basePath, CancellationToken ct)
@@ -104,7 +104,7 @@ public class StepHandler
 
         string? injectContext = null;
 
-        // Inner loop: process the current step, then keep going until complete/blocked/clutch
+        // Inner loop: process the current step, then keep going until complete/blocked/disabled
         var currentTask = task;
         var currentStep = step;
         var currentRunId = runId;
@@ -184,10 +184,10 @@ public class StepHandler
 
                 injectContext = loopResult.InjectContext;
 
-                // Check clutch before continuing inner loop
-                if (!await _engineConfigRepo.IsClutchEngaged(ct))
+                // Check engine_enabled before continuing inner loop
+                if (!await _engineConfigRepo.IsEngineEnabled(ct))
                 {
-                    Log.Information("Clutch disengaged — exiting after step {Step}", currentStep.StepName);
+                    Log.Information("Engine disabled — exiting after step {Step}", currentStep.StepName);
                     return false;
                 }
 
@@ -231,10 +231,10 @@ public class StepHandler
                 await _taskQueueRepo.Enqueue(card.Id, nextStep, tx, ct);
                 await tx.CommitAsync(ct);
 
-                // Check clutch before continuing
-                if (!await _engineConfigRepo.IsClutchEngaged(ct))
+                // Check engine_enabled before continuing
+                if (!await _engineConfigRepo.IsEngineEnabled(ct))
                 {
-                    Log.Information("Clutch disengaged — exiting after step {Step}", currentStep.StepName);
+                    Log.Information("Engine disabled — exiting after step {Step}", currentStep.StepName);
                     return false;
                 }
 

@@ -34,16 +34,16 @@ The engine:
 3. Validates all workflows and project paths
 4. Polls for highest-priority pending card
 5. Walks the card through its pipeline (agent by agent)
-6. Exits when queue is drained or clutch is disengaged
+6. Exits when queue is drained or engine is disabled
 
-## Clutch
+## Engine Enable/Disable
 
 ```sql
--- Disengage (engine finishes current step then exits)
-UPDATE nightshift.engine_config SET clutch_engaged = false, updated_at = now();
+-- Disable (engine finishes current step then exits)
+UPDATE nightshift.engine_config SET engine_enabled = false, updated_at = now();
 
--- Re-engage before next run
-UPDATE nightshift.engine_config SET clutch_engaged = true, updated_at = now();
+-- Re-enable before next run
+UPDATE nightshift.engine_config SET engine_enabled = true, updated_at = now();
 ```
 
 ## Queue a Card

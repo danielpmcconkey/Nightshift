@@ -3,7 +3,6 @@ using Microsoft.Extensions.Hosting;
 using Nightshift.Engine.Agents;
 using Nightshift.Engine.Data;
 using Nightshift.Engine.Engine;
-using Npgsql;
 using Serilog;
 
 Log.Logger = new LoggerConfiguration()
@@ -28,16 +27,9 @@ try
 {
     Log.Information("Nightshift engine starting");
 
-    var connectionString = Environment.GetEnvironmentVariable("NIGHTSHIFT_CONNECTION_STRING")
-        ?? throw new InvalidOperationException(
-            "NIGHTSHIFT_CONNECTION_STRING environment variable is required");
-
     var builder = Host.CreateApplicationBuilder(args);
     builder.Services.AddSerilog();
-
-    var dataSourceBuilder = new NpgsqlDataSourceBuilder(connectionString);
-    var dataSource = dataSourceBuilder.Build();
-    builder.Services.AddSingleton(dataSource);
+    builder.Services.AddNightshiftDatabase(builder.Configuration);
 
     builder.Services.AddSingleton<CardRepository>();
     builder.Services.AddSingleton<TaskQueueRepository>();

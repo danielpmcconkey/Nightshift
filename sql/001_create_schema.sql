@@ -133,7 +133,7 @@ CREATE INDEX ix_run_history_card_step ON nightshift.run_history (card_id, step_n
 -- Engine config (singleton)
 CREATE TABLE nightshift.engine_config (
     id              integer         PRIMARY KEY DEFAULT 1 CHECK (id = 1),
-    clutch_engaged  boolean         NOT NULL DEFAULT true,
+    engine_enabled  boolean         NOT NULL DEFAULT true,
     updated_at      timestamptz     NOT NULL DEFAULT now()
 );
 

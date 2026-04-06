@@ -97,10 +97,10 @@ public class EngineWorker : BackgroundService
     {
         while (!ct.IsCancellationRequested)
         {
-            // Check clutch
-            if (!await _engineConfig.IsClutchEngaged(ct))
+            // Check engine_enabled
+            if (!await _engineConfig.IsEngineEnabled(ct))
             {
-                Log.Information("Clutch disengaged — exiting");
+                Log.Information("Engine disabled — exiting");
                 return;
             }
 
@@ -120,7 +120,7 @@ public class EngineWorker : BackgroundService
 
                 if (!shouldContinue)
                 {
-                    Log.Information("Clutch disengaged during processing — exiting");
+                    Log.Information("Engine disabled during processing — exiting");
                     return;
                 }
             }
