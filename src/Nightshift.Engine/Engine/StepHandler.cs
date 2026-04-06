@@ -179,7 +179,7 @@ public class StepHandler
 
                 await _cardRepo.AdvanceStep(card.Id, nextStepName, tx2, ct);
                 await _taskQueueRepo.Complete(currentTask.Id, tx2, ct);
-                await _taskQueueRepo.Enqueue(card.Id, nextStepName, tx2, ct);
+                var newTaskId = await _taskQueueRepo.Enqueue(card.Id, nextStepName, tx2, ct);
                 await tx2.CommitAsync(ct);
 
                 injectContext = loopResult.InjectContext;
@@ -194,7 +194,7 @@ public class StepHandler
                 // Reload for next iteration
                 card = (await _cardRepo.GetById(card.Id, ct))!;
                 currentStep = workflow.Steps.Find(s => s.StepName == nextStepName)!;
-                currentTask = new TaskQueueItem { Id = 0, CardId = card.Id, StepName = nextStepName };
+                currentTask = new TaskQueueItem { Id = newTaskId, CardId = card.Id, StepName = nextStepName };
 
                 // Log new run start
                 await using var tx3 = await conn.BeginTransactionAsync(ct);
@@ -228,7 +228,7 @@ public class StepHandler
 
                 await _cardRepo.AdvanceStep(card.Id, nextStep, tx, ct);
                 await _taskQueueRepo.Complete(currentTask.Id, tx, ct);
-                await _taskQueueRepo.Enqueue(card.Id, nextStep, tx, ct);
+                var newTaskId2 = await _taskQueueRepo.Enqueue(card.Id, nextStep, tx, ct);
                 await tx.CommitAsync(ct);
 
                 // Check engine_enabled before continuing
@@ -241,7 +241,7 @@ public class StepHandler
                 // Continue inner loop with next step
                 card = (await _cardRepo.GetById(card.Id, ct))!;
                 currentStep = workflow.Steps.Find(s => s.StepName == nextStep)!;
-                currentTask = new TaskQueueItem { Id = 0, CardId = card.Id, StepName = nextStep };
+                currentTask = new TaskQueueItem { Id = newTaskId2, CardId = card.Id, StepName = nextStep };
                 injectContext = null;
 
                 await using var tx4 = await conn.BeginTransactionAsync(ct);
