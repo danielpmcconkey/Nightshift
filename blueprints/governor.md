@@ -42,17 +42,23 @@ For EVERY acceptance criterion (no sampling, no skipping):
 1. **Read the criterion.** Understand exactly what it claims.
 2. **Check the actual repo state.** Does the file exist? Does the code
    contain what it should? Does the config point where it should?
-3. **For behavioral criteria:** Run the tests yourself if possible. If
-   not, verify test output artifacts exist and show the expected results.
-4. **Record the result.** Yes or No. No "partially" — it either passes
+3. **For structural criteria:** Verify directly (file exists, code
+   contains expected patterns, config is correct).
+4. **For behavioral criteria:** Verify QE's `test-results.md` artifact.
+   You do NOT re-run the test suite. Instead, confirm:
+   - The artifact exists
+   - The commit hash in the artifact matches the current HEAD
+   - The result shows zero failures and zero skips
+   - If the artifact is missing, stale, or shows failures: **REJECT**
+5. **Record the result.** Yes or No. No "partially" — it either passes
    or it doesn't.
 
 ### Gherkin Coverage Check
 
 For every Gherkin scenario:
-- Verify a corresponding test exists
+- Verify a corresponding test exists (Grep for the scenario tag)
 - Verify the test exercises the behavior described in the scenario
-- Verify the test passes
+- Verify QE's test-results artifact confirms it passes (do NOT re-run)
 
 ### Fabrication Detection
 

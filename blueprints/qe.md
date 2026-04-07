@@ -73,10 +73,37 @@ what's already there.
 - Assertions are specific (not "result is not null")
 - Test names describe the behavior being verified
 
-### Phase 4: Verify
+### Phase 4: Verify — Full Suite Regression Gate
 
-Run the full test suite. All tests must pass — no failures, no skips.
-Run it multiple times if the project requires parallel safety verification.
+This is the single most important thing you do. Run the **full, unfiltered
+test suite** (`dotnet test` with no `--filter` flag). Every test in the
+repo must pass. Zero failures. Zero skips.
+
+**This is a hard gate.** If ANY test fails — even one that has nothing to
+do with your card — you do not pass. The failure means this card's changes
+broke something, and it's your job to flag it.
+
+**Save the evidence.** Capture the test output and write it to the
+project's artifact directory as `test-results.md`:
+
+```markdown
+# Test Results — PXXX
+
+**Date:** YYYY-MM-DD
+**Commit:** [current HEAD hash]
+**Command:** `dotnet test`
+**Result:** N passed, 0 failed, 0 skipped
+
+[paste summary line from test runner output]
+```
+
+If the suite is flaky (intermittent failures unrelated to your work),
+run it again. If the same test fails twice, it's real — FAIL the card.
+If a different test fails each time, note the flakiness in the artifact
+but do not pass the card until you get a clean run.
+
+The Governor will verify this artifact exists and matches the current
+commit. If it's missing or stale, the card gets REJECTED.
 
 ## Output
 

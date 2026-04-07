@@ -34,7 +34,7 @@ with this blueprint as-is.
 1. Read the approved plan thoroughly before writing any code.
 2. Implement deliverables in the order specified by the plan.
 3. After each phase, verify it against the plan's verification criteria.
-4. Run the full test suite after all deliverables are complete.
+4. Run scoped tests after each phase to verify your work.
 
 ### Spec Fidelity
 
@@ -48,11 +48,16 @@ If you discover the plan is wrong or incomplete during implementation:
 ### Quality Gate
 
 Before declaring SUCCESS:
-- All existing tests pass
+- Build succeeds (`dotnet build` or equivalent, zero errors)
+- Scoped tests pass (tests directly related to your deliverables)
 - Zero warnings (unless explicitly accepted in the plan)
 - Every plan deliverable is implemented
 - No files changed that the plan doesn't mention (unless necessary,
   e.g., updating a project file when adding a new source file)
+
+**Note:** You do NOT run the full test suite. That's QE's job. You verify
+your own work compiles and the tests you'd expect to cover your changes
+are green. If you break something in an unrelated test, QE will catch it.
 
 ## Output
 

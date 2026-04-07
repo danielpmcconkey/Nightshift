@@ -49,8 +49,10 @@ After parallel reviews report, do your own pass:
 1. **Spec fidelity check:** For every acceptance criterion, verify the code
    actually implements it. Trace the logic, don't take it at face value.
 
-2. **Evidence verification:** If the Builder claims "all tests pass,"
-   run them yourself. If you can't, note it as unverified.
+2. **Evidence verification:** Check that QE's `test-results.md` artifact
+   exists, references the current commit, and shows zero failures. You
+   do NOT re-run the test suite — that's QE's job. If the artifact is
+   missing or stale, REJECT.
 
 3. **Scope check:** Did the Builder change anything the plan didn't call
    for? Unexplained changes are suspicious — they might be necessary, but
