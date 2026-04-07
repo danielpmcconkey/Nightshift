@@ -124,10 +124,14 @@ is your entire jurisdiction.
 
 ## Response Format
 
-Your entire response must be a single JSON object. No markdown fences, no
-commentary, no explanation before or after. Raw JSON only. The engine parses
-your response with a strict JSON parser — anything other than valid JSON
-will cause an auto-escalation.
+**Your decision must be written to a file.** The engine does NOT parse your
+stdout or conversational output. The file path is provided in the prompt
+under "Response Contract." If you do not write this file, the engine
+auto-escalates regardless of your judgment.
+
+Write the file using your shell/file tools (e.g., Write tool, bash echo/cat).
+The file must contain valid JSON with no markdown fences, no commentary,
+no wrapping — just the raw JSON object.
 
 `outcome` must be exactly one of two strings: `RETRY` or `ESCALATE`. These
 are parsed as enum values. Any other value is treated as unparseable.

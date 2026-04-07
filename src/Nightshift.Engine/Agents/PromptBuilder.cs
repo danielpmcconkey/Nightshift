@@ -63,19 +63,24 @@ public class PromptBuilder
             parts.Add("");
         }
 
-        // Response format instructions
-        parts.Add("# Response Format");
-        parts.Add("You MUST write your response as a JSON file to:");
-        parts.Add($"  `{_artifacts.GetProcessArtifactPath(basePath, card.Id, step.StepName)}`");
+        // Response format instructions — file-based contract
+        var artifactPath = _artifacts.GetProcessArtifactPath(basePath, card.Id, step.StepName);
+        parts.Add("# Response Contract");
         parts.Add("");
-        parts.Add("The JSON must include at minimum:");
-        parts.Add("```json");
+        parts.Add("**CRITICAL:** Your outcome MUST be written as a JSON file. The engine reads this file");
+        parts.Add("to determine what happens next. Your stdout/conversational output is NOT parsed — it is");
+        parts.Add("only used for debug logging. If you do not write this file, the engine treats it as a failure.");
+        parts.Add("");
+        parts.Add($"Write to: `{artifactPath}`");
+        parts.Add("");
+        parts.Add("The JSON must contain exactly this structure:");
         parts.Add("{");
         parts.Add($"  \"outcome\": \"{string.Join(" | ", step.AllowedOutcomes)}\",");
         parts.Add("  \"reason\": \"brief explanation\",");
         parts.Add("  \"notes\": \"optional observations for downstream agents\"");
         parts.Add("}");
-        parts.Add("```");
+        parts.Add("");
+        parts.Add("Write this file using your shell/file tools. Do not print the JSON to stdout.");
         parts.Add("");
         parts.Add("If you have observations useful for downstream agents, append them to:");
         parts.Add($"  `{_artifacts.GetScratchpadPath(basePath, card.Id)}`");
@@ -85,7 +90,8 @@ public class PromptBuilder
 
     public async Task<string> BuildForemanPrompt(Card card, Project project,
         WorkflowStep failedStep, AgentResponse agentResponse,
-        Dictionary<string, int> conditionalCounts, string basePath, CancellationToken ct)
+        Dictionary<string, int> conditionalCounts, string basePath,
+        string foremanArtifactPath, CancellationToken ct)
     {
         var gateCount = failedStep.IsReviewGate
             ? conditionalCounts.GetValueOrDefault(failedStep.StepName, 0)
@@ -138,16 +144,22 @@ public class PromptBuilder
             parts.Add("");
         }
 
-        parts.Add("# Your Response");
-        parts.Add("Respond with JSON:");
-        parts.Add("```json");
+        parts.Add("# Response Contract");
+        parts.Add("");
+        parts.Add("**CRITICAL:** Write your decision as a JSON file. The engine reads this file");
+        parts.Add("to determine whether to retry or escalate. Your stdout is NOT parsed.");
+        parts.Add("If you do not write this file, the engine auto-escalates.");
+        parts.Add("");
+        parts.Add($"Write to: `{foremanArtifactPath}`");
+        parts.Add("");
         parts.Add("{");
         parts.Add("  \"outcome\": \"RETRY | ESCALATE\",");
         parts.Add("  \"reason\": \"why this decision\",");
         parts.Add("  \"notes\": \"observations for the blocker record\",");
         parts.Add("  \"inject_context\": \"optional extra context for the next agent attempt\"");
         parts.Add("}");
-        parts.Add("```");
+        parts.Add("");
+        parts.Add("Write this file using your shell/file tools. Do not print the JSON to stdout.");
 
         return string.Join("\n", parts);
     }

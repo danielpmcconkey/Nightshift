@@ -15,6 +15,9 @@ public class ArtifactManager
     public string GetProcessArtifactPath(string basePath, int cardId, string stepName) =>
         Path.Combine(GetProcessDir(basePath, cardId), $"{stepName}.json");
 
+    public string GetForemanArtifactPath(string basePath, int cardId, string stepName) =>
+        Path.Combine(GetProcessDir(basePath, cardId), $"_foreman_{stepName}.json");
+
     public string GetScratchpadPath(string basePath, int cardId) =>
         Path.Combine(GetArtifactDir(basePath, cardId), "notes.md");
 

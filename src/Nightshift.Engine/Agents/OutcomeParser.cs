@@ -8,6 +8,11 @@ public class OutcomeParser
 {
     private static readonly ILogger Log = Serilog.Log.ForContext<OutcomeParser>();
 
+    /// <summary>
+    /// Parse agent outcome from process artifact file. Stdout is not used for routing —
+    /// agents MUST write their response to the artifact file. If the file doesn't exist,
+    /// the agent failed to follow its contract.
+    /// </summary>
     public AgentResponse Parse(string? stdout, int exitCode, string basePath, int cardId, string stepName)
     {
         var response = new AgentResponse
@@ -16,68 +21,39 @@ public class OutcomeParser
             ExitCode = exitCode
         };
 
-        // Try reading process artifact file first (agent may have written it)
         var artifactPath = Path.Combine(basePath, "artifacts", cardId.ToString(), "process", $"{stepName}.json");
-        string? jsonSource = null;
 
-        if (File.Exists(artifactPath))
+        if (!File.Exists(artifactPath))
         {
-            try
-            {
-                jsonSource = File.ReadAllText(artifactPath);
-                Log.Debug("Parsing outcome from artifact file: {Path}", artifactPath);
-            }
-            catch (Exception ex)
-            {
-                Log.Warning(ex, "Failed to read artifact file {Path}", artifactPath);
-            }
+            Log.Warning("Agent did not write process artifact for card {CardId} step {Step} at {Path}",
+                cardId, stepName, artifactPath);
+            response.Outcome = null; // Will route to Foreman
+            response.Reason = "Agent did not write process artifact file";
+            return response;
         }
 
-        // Fallback: try parsing stdout
-        if (jsonSource is null && !string.IsNullOrWhiteSpace(stdout))
+        string jsonSource;
+        try
         {
-            jsonSource = stdout;
-            Log.Debug("Parsing outcome from stdout");
+            jsonSource = File.ReadAllText(artifactPath);
+            Log.Debug("Parsing outcome from artifact file: {Path}", artifactPath);
         }
-
-        if (jsonSource is null)
+        catch (Exception ex)
         {
-            Log.Warning("No parseable output from agent for card {CardId} step {Step}", cardId, stepName);
+            Log.Warning(ex, "Failed to read artifact file {Path}", artifactPath);
             response.Outcome = AgentOutcome.Fail;
-            response.Reason = "No output from agent";
+            response.Reason = $"Failed to read process artifact: {ex.Message}";
             return response;
         }
 
         try
         {
-            // Claude CLI with --output-format json wraps the response —
-            // the actual content may be in a "result" field
             var doc = JsonDocument.Parse(jsonSource);
             response.FullResponse = doc;
-
             var root = doc.RootElement;
 
-            // Try to find outcome in the root or nested in "result"
-            if (!root.TryGetProperty("outcome", out var outcomeElement))
-            {
-                if (root.TryGetProperty("result", out var resultElement) &&
-                    resultElement.ValueKind == JsonValueKind.String)
-                {
-                    // Try parsing the result string as JSON
-                    try
-                    {
-                        var innerDoc = JsonDocument.Parse(resultElement.GetString()!);
-                        root = innerDoc.RootElement;
-                        root.TryGetProperty("outcome", out outcomeElement);
-                    }
-                    catch
-                    {
-                        // result is not JSON
-                    }
-                }
-            }
-
-            if (outcomeElement.ValueKind != JsonValueKind.Undefined)
+            if (root.TryGetProperty("outcome", out var outcomeElement) &&
+                outcomeElement.ValueKind != JsonValueKind.Undefined)
             {
                 var outcomeStr = outcomeElement.GetString();
                 response.Outcome = AgentOutcomeExtensions.Parse(outcomeStr);
@@ -92,16 +68,77 @@ public class OutcomeParser
 
             if (response.Outcome is null)
             {
-                Log.Warning("Could not parse outcome from agent response for card {CardId} step {Step}",
+                Log.Warning("Process artifact missing 'outcome' field for card {CardId} step {Step}",
                     cardId, stepName);
-                // null outcome → unknown → will route to Foreman
             }
         }
         catch (JsonException ex)
         {
-            Log.Warning(ex, "Failed to parse JSON from agent for card {CardId} step {Step}", cardId, stepName);
+            Log.Warning(ex, "Process artifact is not valid JSON for card {CardId} step {Step}", cardId, stepName);
             response.Outcome = AgentOutcome.Fail;
-            response.Reason = "Unparseable agent response";
+            response.Reason = "Process artifact is not valid JSON";
+        }
+
+        return response;
+    }
+
+    /// <summary>
+    /// Parse Foreman outcome from its artifact file. Same contract — file-based, no stdout parsing.
+    /// </summary>
+    public AgentResponse ParseForemanArtifact(string foremanArtifactPath, string? stdout, int exitCode)
+    {
+        var response = new AgentResponse { RawOutput = stdout, ExitCode = exitCode };
+
+        if (!File.Exists(foremanArtifactPath))
+        {
+            Log.Warning("Foreman did not write artifact at {Path} — auto-escalating", foremanArtifactPath);
+            response.Reason = "Foreman did not write process artifact file";
+            return response; // null outcome → auto-escalate
+        }
+
+        string jsonSource;
+        try
+        {
+            jsonSource = File.ReadAllText(foremanArtifactPath);
+            Log.Debug("Parsing Foreman response from artifact: {Path}", foremanArtifactPath);
+        }
+        catch (Exception ex)
+        {
+            Log.Warning(ex, "Failed to read Foreman artifact {Path}", foremanArtifactPath);
+            response.Reason = $"Failed to read Foreman artifact: {ex.Message}";
+            return response;
+        }
+
+        try
+        {
+            var doc = JsonDocument.Parse(jsonSource);
+            response.FullResponse = doc;
+            var root = doc.RootElement;
+
+            var outcomeStr = root.TryGetProperty("outcome", out var outcomeEl)
+                ? outcomeEl.GetString()?.ToUpperInvariant()
+                : null;
+
+            response.Outcome = outcomeStr switch
+            {
+                "RETRY" => AgentOutcome.Success,
+                "ESCALATE" => AgentOutcome.Fail,
+                _ => null
+            };
+
+            response.Reason = outcomeStr;
+
+            if (root.TryGetProperty("reason", out var reasonEl))
+                response.Notes = reasonEl.GetString();
+            if (root.TryGetProperty("notes", out var notesEl))
+                response.Notes = $"{response.Notes}\n{notesEl.GetString()}".Trim();
+            if (root.TryGetProperty("inject_context", out var injectEl))
+                response.InjectContext = injectEl.GetString();
+        }
+        catch (JsonException ex)
+        {
+            Log.Warning(ex, "Foreman artifact is not valid JSON — auto-escalating");
+            response.Reason = "Foreman artifact is not valid JSON";
         }
 
         return response;

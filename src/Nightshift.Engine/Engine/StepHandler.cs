@@ -116,11 +116,13 @@ public class StepHandler
             var agentResponse = await _agentInvoker.Invoke(
                 card, project, currentStep, blueprintBasePath, basePath, injectContext, ct);
 
-            // Save process artifact
+            // Log stdout for debugging (agent writes process artifact itself)
             if (agentResponse.RawOutput is not null)
             {
-                await _artifacts.SaveProcessArtifact(basePath, card.Id, currentStep.StepName,
-                    agentResponse.RawOutput, ct);
+                var stdoutLogPath = Path.Combine(
+                    _artifacts.GetProcessDir(basePath, card.Id),
+                    $"{currentStep.StepName}.stdout.log");
+                await File.WriteAllTextAsync(stdoutLogPath, agentResponse.RawOutput, ct);
             }
 
             // State mutation transaction

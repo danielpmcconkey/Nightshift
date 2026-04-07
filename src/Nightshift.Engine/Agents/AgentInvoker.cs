@@ -1,4 +1,3 @@
-using System.Text.Json;
 using CliWrap;
 using CliWrap.Buffered;
 using Microsoft.Extensions.Configuration;
@@ -11,6 +10,7 @@ public class AgentInvoker
 {
     private readonly PromptBuilder _promptBuilder;
     private readonly OutcomeParser _outcomeParser;
+    private readonly ArtifactManager _artifacts;
     private static readonly ILogger Log = Serilog.Log.ForContext<AgentInvoker>();
 
     // Model tier map — loaded from appsettings or defaults
@@ -30,10 +30,11 @@ public class AgentInvoker
     private readonly string[] _envWhitelist;
 
     public AgentInvoker(PromptBuilder promptBuilder, OutcomeParser outcomeParser,
-        IConfiguration? configuration = null)
+        ArtifactManager artifacts, IConfiguration? configuration = null)
     {
         _promptBuilder = promptBuilder;
         _outcomeParser = outcomeParser;
+        _artifacts = artifacts;
 
         // Try loading from config, fall back to defaults
         _modelTierMap = new Dictionary<string, string>(DefaultModelTierMap);
@@ -80,14 +81,7 @@ public class AgentInvoker
         Log.Information("Invoking agent: card={CardId} step={Step} blueprint={Blueprint} model={Model}",
             card.Id, step.StepName, step.BlueprintName, modelId);
 
-        // Build whitelisted environment
-        var env = new Dictionary<string, string?>();
-        foreach (var key in _envWhitelist)
-        {
-            var val = Environment.GetEnvironmentVariable(key);
-            if (val is not null)
-                env[key] = val;
-        }
+        var env = BuildEnv();
 
         try
         {
@@ -99,7 +93,7 @@ public class AgentInvoker
                 {
                     args.Add("-p");
                     args.Add("--append-system-prompt").Add(systemPrompt);
-                    args.Add("--output-format").Add("json");
+                    args.Add("--output-format").Add("text");
                     args.Add("--model").Add(modelId);
                     args.Add("--dangerously-skip-permissions");
                     args.Add("--no-session-persistence");
@@ -116,12 +110,12 @@ public class AgentInvoker
             if (!string.IsNullOrWhiteSpace(result.StandardError))
                 Log.Debug("Agent stderr: {Stderr}", result.StandardError);
 
+            // Outcome comes from the artifact file the agent wrote, not stdout
             return _outcomeParser.Parse(result.StandardOutput, result.ExitCode,
                 basePath, card.Id, step.StepName);
         }
         catch (OperationCanceledException) when (!ct.IsCancellationRequested)
         {
-            // Timeout, not engine shutdown
             Log.Warning("Agent timed out after {Seconds}s: card={CardId} step={Step}",
                 step.TimeoutSeconds, card.Id, step.StepName);
             return new AgentResponse
@@ -146,18 +140,19 @@ public class AgentInvoker
             ? $"{blueprint}\n\n---\n\n# Project Addendum\n\n{addendum}"
             : blueprint;
 
+        var foremanArtifactPath = _artifacts.GetForemanArtifactPath(basePath, card.Id, failedStep.StepName);
+
+        // Clean any stale foreman artifact from a prior invocation
+        if (File.Exists(foremanArtifactPath))
+            File.Delete(foremanArtifactPath);
+
         var prompt = await _promptBuilder.BuildForemanPrompt(
-            card, project, failedStep, agentResponse, conditionalCounts, basePath, ct);
+            card, project, failedStep, agentResponse, conditionalCounts, basePath,
+            foremanArtifactPath, ct);
 
         Log.Information("Invoking Foreman: card={CardId} failedStep={Step}", card.Id, failedStep.StepName);
 
-        var env = new Dictionary<string, string?>();
-        foreach (var key in _envWhitelist)
-        {
-            var val = Environment.GetEnvironmentVariable(key);
-            if (val is not null)
-                env[key] = val;
-        }
+        var env = BuildEnv();
 
         try
         {
@@ -169,7 +164,7 @@ public class AgentInvoker
                 {
                     args.Add("-p");
                     args.Add("--append-system-prompt").Add(systemPrompt);
-                    args.Add("--output-format").Add("json");
+                    args.Add("--output-format").Add("text");
                     args.Add("--model").Add(modelId);
                     args.Add("--dangerously-skip-permissions");
                     args.Add("--no-session-persistence");
@@ -183,8 +178,9 @@ public class AgentInvoker
             Log.Information("Foreman completed: card={CardId} exitCode={ExitCode}",
                 card.Id, result.ExitCode);
 
-            // Parse Foreman response — reuse outcome parser but expect RETRY/ESCALATE
-            return ParseForemanResponse(result.StandardOutput, result.ExitCode);
+            // Outcome comes from the artifact file, not stdout
+            return _outcomeParser.ParseForemanArtifact(foremanArtifactPath,
+                result.StandardOutput, result.ExitCode);
         }
         catch (OperationCanceledException) when (!ct.IsCancellationRequested)
         {
@@ -197,66 +193,15 @@ public class AgentInvoker
         }
     }
 
-    private AgentResponse ParseForemanResponse(string? stdout, int exitCode)
+    private Dictionary<string, string?> BuildEnv()
     {
-        var response = new AgentResponse { RawOutput = stdout, ExitCode = exitCode };
-
-        if (string.IsNullOrWhiteSpace(stdout))
+        var env = new Dictionary<string, string?>();
+        foreach (var key in _envWhitelist)
         {
-            Log.Warning("Foreman returned empty response — auto-escalating");
-            return response; // null outcome → auto-escalate
+            var val = Environment.GetEnvironmentVariable(key);
+            if (val is not null)
+                env[key] = val;
         }
-
-        try
-        {
-            var doc = JsonDocument.Parse(stdout);
-            response.FullResponse = doc;
-            var root = doc.RootElement;
-
-            // Handle Claude CLI wrapper
-            if (!root.TryGetProperty("outcome", out var outcomeEl))
-            {
-                if (root.TryGetProperty("result", out var resultEl) &&
-                    resultEl.ValueKind == JsonValueKind.String)
-                {
-                    try
-                    {
-                        var innerDoc = JsonDocument.Parse(resultEl.GetString()!);
-                        root = innerDoc.RootElement;
-                        root.TryGetProperty("outcome", out outcomeEl);
-                    }
-                    catch { }
-                }
-            }
-
-            var outcomeStr = outcomeEl.ValueKind != JsonValueKind.Undefined
-                ? outcomeEl.GetString()?.ToUpperInvariant()
-                : null;
-
-            // Map RETRY/ESCALATE to our enum (RETRY → Success means "proceed with retry")
-            response.Outcome = outcomeStr switch
-            {
-                "RETRY" => AgentOutcome.Success,  // Success signals "Foreman says retry"
-                "ESCALATE" => AgentOutcome.Fail,   // Fail signals "Foreman says escalate"
-                _ => null                           // Unknown → auto-escalate
-            };
-
-            // Store the raw outcome string for the caller
-            response.Reason = outcomeStr;
-
-            if (root.TryGetProperty("reason", out var reasonEl))
-                response.Notes = reasonEl.GetString();
-            if (root.TryGetProperty("notes", out var notesEl))
-                response.Notes = $"{response.Notes}\n{notesEl.GetString()}".Trim();
-            if (root.TryGetProperty("inject_context", out var injectEl))
-                response.InjectContext = injectEl.GetString();
-        }
-        catch (JsonException ex)
-        {
-            Log.Warning(ex, "Foreman returned unparseable JSON — auto-escalating");
-            response.Reason = "Foreman returned unparseable response";
-        }
-
-        return response;
+        return env;
     }
 }
