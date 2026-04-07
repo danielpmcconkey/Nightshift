@@ -11,8 +11,12 @@ logs/
 # IDE
 .vs/
 .vscode/
+.idea/
 *.user
 *.suo
+
+# Tool indexes
+.serena/
 
 # OS
 .DS_Store

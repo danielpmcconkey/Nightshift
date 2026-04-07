@@ -109,8 +109,16 @@ public class EngineWorker : BackgroundService
 
             if (task is null)
             {
-                Log.Information("Queue drained — no pending unblocked cards. Exiting.");
-                return;
+                Log.Debug("No pending unblocked cards — waiting 60s before recheck");
+                await Task.Delay(TimeSpan.FromSeconds(60), ct);
+
+                if (!await _engineConfig.IsEngineEnabled(ct))
+                {
+                    Log.Information("Engine disabled during idle poll — exiting");
+                    return;
+                }
+
+                continue;
             }
 
             try

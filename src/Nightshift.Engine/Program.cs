@@ -25,7 +25,11 @@ Log.Logger = new LoggerConfiguration()
 
 try
 {
-    Log.Information("Nightshift engine starting");
+    var assembly = System.Reflection.Assembly.GetExecutingAssembly();
+    var version = System.Reflection.CustomAttributeExtensions
+        .GetCustomAttribute<System.Reflection.AssemblyInformationalVersionAttribute>(assembly)
+        ?.InformationalVersion ?? "unknown";
+    Log.Information("Nightshift engine v{Version}", version);
 
     var builder = Host.CreateApplicationBuilder(args);
     builder.Services.AddSerilog();
