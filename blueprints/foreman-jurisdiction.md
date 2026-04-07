@@ -124,16 +124,23 @@ is your entire jurisdiction.
 
 ## Response Format
 
-Respond with JSON only. No markdown, no commentary outside the JSON block.
+Your entire response must be a single JSON object. No markdown fences, no
+commentary, no explanation before or after. Raw JSON only. The engine parses
+your response with a strict JSON parser — anything other than valid JSON
+will cause an auto-escalation.
 
-```json
+`outcome` must be exactly one of two strings: `RETRY` or `ESCALATE`. These
+are parsed as enum values. Any other value is treated as unparseable.
+
+`inject_context` is free text consumed by the next LLM agent, not by code.
+Put all your detailed guidance there.
+
 {
-  "outcome": "RETRY | ESCALATE",
+  "outcome": "RETRY",
   "reason": "One sentence: why this decision.",
   "notes": "Detail for the blocker record if escalating. Null if retrying.",
   "inject_context": "Specific guidance for the producing agent on retry. Null if escalating."
 }
-```
 
 ## Rules
 
