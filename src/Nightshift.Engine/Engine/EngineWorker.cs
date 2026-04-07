@@ -109,6 +109,11 @@ public class EngineWorker : BackgroundService
 
             if (task is null)
             {
+                // Check for unblocked cards that need their first step enqueued
+                var activated = await _taskQueue.ActivateUnblockedCards(_workflowRepo, _projectRepo, ct);
+                if (activated > 0)
+                    continue; // New tasks enqueued — loop back and claim immediately
+
                 Log.Debug("No pending unblocked cards — waiting 60s before recheck");
                 await Task.Delay(TimeSpan.FromSeconds(60), ct);
 

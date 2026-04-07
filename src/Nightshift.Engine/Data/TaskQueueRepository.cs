@@ -115,6 +115,77 @@ public class TaskQueueRepository
         await cmd.ExecuteNonQueryAsync(ct);
     }
 
+    /// <summary>
+    /// Find queued cards whose dependencies are all complete but have no pending/claimed tasks.
+    /// Enqueue the first workflow step for each. Returns count of cards activated.
+    /// </summary>
+    public async Task<int> ActivateUnblockedCards(WorkflowRepository workflowRepo, ProjectRepository projectRepo, CancellationToken ct)
+    {
+        await using var conn = await _dataSource.OpenConnectionAsync(ct);
+
+        // Find cards that are queued, all deps complete, and have no pending/claimed tasks
+        await using var findCmd = new NpgsqlCommand(@"
+            SELECT c.id, c.project_id, c.title
+            FROM nightshift.card c
+            WHERE c.status = 'queued'
+              AND NOT EXISTS (
+                  SELECT 1
+                  FROM nightshift.card_dependency cd
+                  JOIN nightshift.card dep ON dep.id = cd.depends_on_id
+                  WHERE cd.card_id = c.id
+                    AND dep.status != 'complete'
+              )
+              AND NOT EXISTS (
+                  SELECT 1
+                  FROM nightshift.task_queue tq
+                  WHERE tq.card_id = c.id
+                    AND tq.status IN ('pending', 'claimed')
+              )
+            ORDER BY c.priority ASC, c.created_at ASC", conn);
+
+        var cardsToActivate = new List<(int Id, int ProjectId, string Title)>();
+        await using (var reader = await findCmd.ExecuteReaderAsync(ct))
+        {
+            while (await reader.ReadAsync(ct))
+                cardsToActivate.Add((reader.GetInt32(0), reader.GetInt32(1), reader.GetString(2)));
+        }
+
+        if (cardsToActivate.Count == 0) return 0;
+
+        foreach (var (cardId, projectId, title) in cardsToActivate)
+        {
+            var project = await projectRepo.GetById(projectId, ct);
+            if (project is null)
+            {
+                Log.Error("Card {CardId} references unknown project {ProjectId}", cardId, projectId);
+                continue;
+            }
+
+            var workflow = await workflowRepo.GetForProject(project, ct);
+            if (workflow is null)
+            {
+                Log.Error("No workflow found for project {ProjectId}", projectId);
+                continue;
+            }
+
+            var firstStep = workflow.Steps.OrderBy(s => s.Sequence).First();
+
+            await using var tx = await conn.BeginTransactionAsync(ct);
+            await using var cmd = new NpgsqlCommand(@"
+                INSERT INTO nightshift.task_queue (card_id, step_name)
+                VALUES (@cardId, @step)", conn, tx);
+            cmd.Parameters.AddWithValue("cardId", cardId);
+            cmd.Parameters.AddWithValue("step", firstStep.StepName);
+            await cmd.ExecuteNonQueryAsync(ct);
+            await tx.CommitAsync(ct);
+
+            Log.Information("Activated card {CardId} ({Title}) — enqueued first step {Step}",
+                cardId, title, firstStep.StepName);
+        }
+
+        return cardsToActivate.Count;
+    }
+
     public async Task RecoverOrphaned(CancellationToken ct)
     {
         await using var conn = await _dataSource.OpenConnectionAsync(ct);

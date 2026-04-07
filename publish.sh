@@ -10,7 +10,7 @@ SHA=$(git -C "$REPO_ROOT" rev-parse --short HEAD)
 TAG=$(git -C "$REPO_ROOT" describe --tags --exact-match 2>/dev/null || echo "")
 
 if [ -n "$TAG" ]; then
-    VERSION_SUFFIX="$TAG+$SHA"
+    VERSION_SUFFIX="${TAG#v}+$SHA"
 else
     VERSION_SUFFIX="0.0.0-dev+$SHA"
 fi
