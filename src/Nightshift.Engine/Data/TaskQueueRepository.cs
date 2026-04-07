@@ -75,15 +75,17 @@ public class TaskQueueRepository
         }
     }
 
-    public async Task Enqueue(int cardId, string stepName, NpgsqlTransaction tx, CancellationToken ct)
+    public async Task<long> Enqueue(int cardId, string stepName, NpgsqlTransaction tx, CancellationToken ct)
     {
         await using var cmd = new NpgsqlCommand(@"
             INSERT INTO nightshift.task_queue (card_id, step_name)
-            VALUES (@cardId, @step)", tx.Connection!, tx);
+            VALUES (@cardId, @step)
+            RETURNING id", tx.Connection!, tx);
         cmd.Parameters.AddWithValue("cardId", cardId);
         cmd.Parameters.AddWithValue("step", stepName);
-        await cmd.ExecuteNonQueryAsync(ct);
-        Log.Information("Enqueued task for card {CardId} step {Step}", cardId, stepName);
+        var newId = (long)(await cmd.ExecuteScalarAsync(ct))!;
+        Log.Information("Enqueued task {TaskId} for card {CardId} step {Step}", newId, cardId, stepName);
+        return newId;
     }
 
     public async Task Complete(long taskId, NpgsqlTransaction tx, CancellationToken ct)
