@@ -98,6 +98,60 @@ public class CardRepository
         return JsonSerializer.Deserialize<Dictionary<string, int>>(json) ?? [];
     }
 
+    public async Task AddDependency(int cardId, int dependsOnId, CancellationToken ct)
+    {
+        await using var conn = await _dataSource.OpenConnectionAsync(ct);
+        await using var cmd = new NpgsqlCommand(@"
+            INSERT INTO nightshift.card_dependency (card_id, depends_on_id)
+            VALUES (@cardId, @depId)
+            ON CONFLICT DO NOTHING", conn);
+        cmd.Parameters.AddWithValue("cardId", cardId);
+        cmd.Parameters.AddWithValue("depId", dependsOnId);
+        await cmd.ExecuteNonQueryAsync(ct);
+        Log.Information("Card {CardId} now depends on card {DependsOnId}", cardId, dependsOnId);
+    }
+
+    public async Task RemoveDependency(int cardId, int dependsOnId, CancellationToken ct)
+    {
+        await using var conn = await _dataSource.OpenConnectionAsync(ct);
+        await using var cmd = new NpgsqlCommand(@"
+            DELETE FROM nightshift.card_dependency
+            WHERE card_id = @cardId AND depends_on_id = @depId", conn);
+        cmd.Parameters.AddWithValue("cardId", cardId);
+        cmd.Parameters.AddWithValue("depId", dependsOnId);
+        await cmd.ExecuteNonQueryAsync(ct);
+        Log.Information("Removed dependency: card {CardId} no longer depends on card {DependsOnId}", cardId, dependsOnId);
+    }
+
+    public async Task<List<int>> GetDependencies(int cardId, CancellationToken ct)
+    {
+        await using var conn = await _dataSource.OpenConnectionAsync(ct);
+        await using var cmd = new NpgsqlCommand(@"
+            SELECT depends_on_id FROM nightshift.card_dependency WHERE card_id = @cardId", conn);
+        cmd.Parameters.AddWithValue("cardId", cardId);
+        await using var reader = await cmd.ExecuteReaderAsync(ct);
+        var deps = new List<int>();
+        while (await reader.ReadAsync(ct))
+            deps.Add(reader.GetInt32(0));
+        return deps;
+    }
+
+    public async Task<List<(int DependsOnId, string Status)>> GetDependencyStatuses(int cardId, CancellationToken ct)
+    {
+        await using var conn = await _dataSource.OpenConnectionAsync(ct);
+        await using var cmd = new NpgsqlCommand(@"
+            SELECT cd.depends_on_id, c.status
+            FROM nightshift.card_dependency cd
+            JOIN nightshift.card c ON c.id = cd.depends_on_id
+            WHERE cd.card_id = @cardId", conn);
+        cmd.Parameters.AddWithValue("cardId", cardId);
+        await using var reader = await cmd.ExecuteReaderAsync(ct);
+        var result = new List<(int, string)>();
+        while (await reader.ReadAsync(ct))
+            result.Add((reader.GetInt32(0), reader.GetString(1)));
+        return result;
+    }
+
     private static Card ReadCard(NpgsqlDataReader reader) => new()
     {
         Id = reader.GetInt32(0),

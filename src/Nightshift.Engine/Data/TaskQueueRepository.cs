@@ -36,6 +36,13 @@ public class TaskQueueRepository
                     JOIN nightshift.card c ON c.id = tq.card_id
                     WHERE tq.status = 'pending'
                       AND c.status IN ('queued', 'in_progress')
+                      AND NOT EXISTS (
+                          SELECT 1
+                          FROM nightshift.card_dependency cd
+                          JOIN nightshift.card dep ON dep.id = cd.depends_on_id
+                          WHERE cd.card_id = c.id
+                            AND dep.status != 'complete'
+                      )
                     ORDER BY c.priority ASC, tq.created_at ASC
                     FOR UPDATE OF tq SKIP LOCKED
                     LIMIT 1
