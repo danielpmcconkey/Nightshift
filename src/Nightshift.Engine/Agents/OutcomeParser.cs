@@ -1,3 +1,4 @@
+using System.Linq;
 using System.Text.Json;
 using Nightshift.Engine.Models;
 using Serilog;
@@ -59,11 +60,11 @@ public class OutcomeParser
                 response.Outcome = AgentOutcomeExtensions.Parse(outcomeStr);
 
                 if (root.TryGetProperty("reason", out var reasonEl))
-                    response.Reason = reasonEl.GetString();
+                    response.Reason = CoerceToString(reasonEl);
                 if (root.TryGetProperty("notes", out var notesEl))
-                    response.Notes = notesEl.GetString();
+                    response.Notes = CoerceToString(notesEl);
                 if (root.TryGetProperty("inject_context", out var injectEl))
-                    response.InjectContext = injectEl.GetString();
+                    response.InjectContext = CoerceToString(injectEl);
             }
 
             if (response.Outcome is null)
@@ -80,6 +81,21 @@ public class OutcomeParser
         }
 
         return response;
+    }
+
+    /// <summary>
+    /// Safely extract a string from a JsonElement that might be a string, array, or other type.
+    /// Agents sometimes write arrays where we expect strings.
+    /// </summary>
+    private static string? CoerceToString(JsonElement el)
+    {
+        return el.ValueKind switch
+        {
+            JsonValueKind.String => el.GetString(),
+            JsonValueKind.Array => string.Join("\n", el.EnumerateArray().Select(e => e.ToString())),
+            JsonValueKind.Null or JsonValueKind.Undefined => null,
+            _ => el.ToString()
+        };
     }
 
     /// <summary>
